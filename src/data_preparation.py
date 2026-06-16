@@ -10,10 +10,19 @@ def load_and_clean_data(filepath):
     df = pd.read_csv(filepath)
     if 'customerID' in df.columns:
         df = df.drop(columns=['customerID'])
+    if 'gender' in df.columns:
+        df = df.drop(columns=['gender']) 
+    df = df.drop_duplicates()       
         
-    df['TotalCharges'] = df['TotalCharges'].replace(" ", np.nan)
-    df['TotalCharges'] = pd.to_numeric(df['TotalCharges'])
-    df['TotalCharges'] = df['TotalCharges'].fillna(df['TotalCharges'].median())
+    # --- REŠENJE ZA GREŠKU (ValueError: could not convert string to float: ' ') ---
+    if 'TotalCharges' in df.columns:
+        # Zamenjujemo prazne stringove (" ") sa NaN (Not a Number) vrednostima
+        df['TotalCharges'] = df['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)
+        # Prisilno konvertujemo kolonu u numerički tip (float)
+        df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')
+        # Popunjavamo NaN vrednosti medijanom kolone (robustan način)
+        df['TotalCharges'] = df['TotalCharges'].fillna(df['TotalCharges'].median())
+        
     return df
 
 def perform_eda(df, fig_dir):
@@ -66,6 +75,11 @@ def split_and_save_data(raw_path, processed_dir, fig_dir):
     # Podela na Train (70%), Val (15%), Test (15%) sa stratifikacijom
     X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.30, random_state=42, stratify=y)
     X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.50, random_state=42, stratify=y_temp)
+    
+    # --- DODATO: .copy() da bi se izbegao "SettingWithCopyWarning" kod skaliranja ---
+    X_train = X_train.copy()
+    X_val = X_val.copy()
+    X_test = X_test.copy()
     
     # Skaliranje (Fit isključivo na train skupu!)
     scaler = StandardScaler()
