@@ -154,7 +154,7 @@ def train_models(processed_dir, models_dir):
     for k in k_values:
         knn_dist = KNeighborsClassifier(n_neighbors=k, weights='distance')
         knn_dist.fit(X_train, y_train)
-        preds_dist = knn_dist.predict(X_val)  # Ispravljena greška 'pre33dict' iz tvog koda
+        preds_dist = knn_dist.predict(X_val)  
         error_rates_distance.append(1 - (preds_dist == y_val).mean())
         
         knn_unif = KNeighborsClassifier(n_neighbors=k, weights='uniform')
