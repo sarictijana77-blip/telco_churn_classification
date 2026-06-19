@@ -14,7 +14,7 @@ def load_and_clean_data(filepath):
         df = df.drop(columns=['gender']) 
     df = df.drop_duplicates()       
         
-    # --- REŠENJE ZA GREŠKU (ValueError: could not convert string to float: ' ') ---
+    
     if 'TotalCharges' in df.columns:
         # Zamenjujemo prazne stringove (" ") sa NaN (Not a Number) vrednostima
         df['TotalCharges'] = df['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)

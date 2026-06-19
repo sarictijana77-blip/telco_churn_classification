@@ -9,31 +9,64 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import GridSearchCV
-from imblearn.over_sampling import SMOTE
+from sklearn.metrics import f1_score
+from imblearn.combine import SMOTEENN  # Izmena: SMOTEENN umesto običnog SMOTE za bolji Precision
 from imblearn.pipeline import Pipeline as ImbPipeline
 import xgboost as xgb
 
-# Ignorisanje dosadnih upozorenja o promenama verzija
+# Ignorisanje upozorenja o promenama verzija
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 warnings.filterwarnings('ignore', category=FutureWarning)
+
+def find_best_threshold(model, X_val, y_val):
+    """
+    Funkcija koja koristi validacioni skup da pronađe prag (threshold)
+    koji daje najbolji F1-skor, čime balansiramo Precision i Recall.
+    """
+    # Provera da li model podržava predict_proba (CalibratedSVC i ostali podržavaju)
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(X_val)[:, 1]
+    else:
+        probs = model.decision_function(X_val)
+        probs = (probs - probs.min()) / (probs.max() - probs.min()) # Skaliranje na 0-1
+        
+    best_thresh = 0.5
+    best_f1 = 0
+    
+    # Isprobavamo pragove od 0.3 do 0.8
+    for thresh in np.arange(0.3, 0.8, 0.02):
+        preds = (probs >= thresh).astype(int)
+        score = f1_score(y_val, preds)
+        if score > best_f1:
+            best_f1 = score
+            best_thresh = thresh
+            
+    return best_thresh, best_f1
 
 def train_models(processed_dir, models_dir):
     os.makedirs(models_dir, exist_ok=True)
     
-    # Učitavanje trening skupa podataka
+    # Učitavanje trening i validacionog skupa podataka
     train_df = pd.read_csv(os.path.join(processed_dir, 'train.csv'))
     X_train = train_df.drop(columns=['Churn'])
     y_train = train_df['Churn']
+    
+    val_df = pd.read_csv(os.path.join(processed_dir, 'val.csv'))
+    X_val = val_df.drop(columns=['Churn'])
+    y_val = val_df['Churn']
+    
+    # Rečnik u koji ćemo čuvati optimalne pragove za svaki model
+    model_thresholds = {}
     
     # =========================================================================
     # 1. LOGISTIC REGRESSION - GridSearchCV
     # =========================================================================
     print("=" * 60)
-    print("1/6  Logistic Regression - GridSearchCV")
+    print("1/6  Logistic Regression - GridSearchCV (SMOTEENN)")
     print("=" * 60)
     lr_pipeline = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
-        ('clf', LogisticRegression(class_weight='balanced', random_state=42, max_iter=2000))
+        ('smoteenn', SMOTEENN(random_state=42)),
+        ('clf', LogisticRegression(random_state=42, max_iter=2000))
     ])
     lr_param_grid = {
         'clf__C': [0.01, 0.1, 1.0, 10.0],
@@ -42,19 +75,25 @@ def train_models(processed_dir, models_dir):
     }
     lr_grid = GridSearchCV(lr_pipeline, lr_param_grid, cv=5, scoring='f1', n_jobs=-1, verbose=1)
     lr_grid.fit(X_train, y_train)
-    print(f"  → Najbolji parametri: {lr_grid.best_params_}")
-    print(f"  → Najbolji F1 (CV): {lr_grid.best_score_:.4f}")
-    joblib.dump(lr_grid.best_estimator_, os.path.join(models_dir, 'logistic_regression_model.pkl'))
+    
+    # Optimizacija praga na validacionom skupu
+    best_lr = lr_grid.best_estimator_
+    thresh, val_f1 = find_best_threshold(best_lr, X_val, y_val)
+    model_thresholds['logistic_regression_model'] = thresh
+    
+    print(f"  → Najbolji CV parametri: {lr_grid.best_params_}")
+    print(f"  → Optimalni prag na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
+    joblib.dump(best_lr, os.path.join(models_dir, 'logistic_regression_model.pkl'))
     
     # =========================================================================
     # 2. RANDOM FOREST - GridSearchCV
     # =========================================================================
     print("=" * 60)
-    print("2/6  Random Forest - GridSearchCV")
+    print("2/6  Random Forest - GridSearchCV (SMOTEENN)")
     print("=" * 60)
     rf_pipeline = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
-        ('clf', RandomForestClassifier(random_state=42, class_weight='balanced'))
+        ('smoteenn', SMOTEENN(random_state=42)),
+        ('clf', RandomForestClassifier(random_state=42))
     ])
     rf_param_grid = {
         'clf__n_estimators': [100, 200],
@@ -64,18 +103,23 @@ def train_models(processed_dir, models_dir):
     }
     rf_grid = GridSearchCV(rf_pipeline, rf_param_grid, cv=5, scoring='f1', n_jobs=-1, verbose=1)
     rf_grid.fit(X_train, y_train)
-    print(f"  → Najbolji parametri: {rf_grid.best_params_}")
-    print(f"  → Najbolji F1 (CV): {rf_grid.best_score_:.4f}")
-    joblib.dump(rf_grid.best_estimator_, os.path.join(models_dir, 'random_forest_model.pkl'))
+    
+    best_rf = rf_grid.best_estimator_
+    thresh, val_f1 = find_best_threshold(best_rf, X_val, y_val)
+    model_thresholds['random_forest_model'] = thresh
+    
+    print(f"  → Najbolji CV parametri: {rf_grid.best_params_}")
+    print(f"  → Optimalni prag na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
+    joblib.dump(best_rf, os.path.join(models_dir, 'random_forest_model.pkl'))
     
     # =========================================================================
     # 3. GRADIENT BOOSTING - GridSearchCV
     # =========================================================================
     print("=" * 60)
-    print("3/6  Gradient Boosting - GridSearchCV")
+    print("3/6  Gradient Boosting - GridSearchCV (SMOTEENN)")
     print("=" * 60)
     gb_pipeline = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
+        ('smoteenn', SMOTEENN(random_state=42)),
         ('clf', GradientBoostingClassifier(random_state=42))
     ])
     gb_param_grid = {
@@ -86,21 +130,22 @@ def train_models(processed_dir, models_dir):
     }
     gb_grid = GridSearchCV(gb_pipeline, gb_param_grid, cv=5, scoring='f1', n_jobs=-1, verbose=1)
     gb_grid.fit(X_train, y_train)
-    print(f"  → Najbolji parametri: {gb_grid.best_params_}")
-    print(f"  → Najbolji F1 (CV): {gb_grid.best_score_:.4f}")
-    joblib.dump(gb_grid.best_estimator_, os.path.join(models_dir, 'gradient_boosting_model.pkl'))
+    
+    best_gb = gb_grid.best_estimator_
+    thresh, val_f1 = find_best_threshold(best_gb, X_val, y_val)
+    model_thresholds['gradient_boosting_model'] = thresh
+    
+    print(f"  → Najbolji CV parametri: {gb_grid.best_params_}")
+    print(f"  → Optimalni prag na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
+    joblib.dump(best_gb, os.path.join(models_dir, 'gradient_boosting_model.pkl'))
     
     # =========================================================================
-    # 4. KNN - Elbow metoda + GridSearchCV (weights, metric)
+    # 4. KNN - Elbow metoda + GridSearchCV
     # =========================================================================
     print("=" * 60)
     print("4/6  KNN - Elbow + GridSearchCV")
     print("=" * 60)
     print("  → Pokrećem Elbow metodu za odabir optimalnog K na VALIDACIONOM skupu...")
-    
-    val_df = pd.read_csv(os.path.join(processed_dir, 'val.csv'))
-    X_val = val_df.drop(columns=['Churn'])
-    y_val = val_df['Churn']
     
     k_values = range(1, 51)
     error_rates_distance = []
@@ -109,7 +154,7 @@ def train_models(processed_dir, models_dir):
     for k in k_values:
         knn_dist = KNeighborsClassifier(n_neighbors=k, weights='distance')
         knn_dist.fit(X_train, y_train)
-        preds_dist = knn_dist.predict(X_val)
+        preds_dist = knn_dist.predict(X_val)  # Ispravljena greška 'pre33dict' iz tvog koda
         error_rates_distance.append(1 - (preds_dist == y_val).mean())
         
         knn_unif = KNeighborsClassifier(n_neighbors=k, weights='uniform')
@@ -133,7 +178,7 @@ def train_models(processed_dir, models_dir):
     
     print(f"  → Najbolji distance K={best_dist_k} (error: {best_dist_error:.4f})")
     print(f"  → Najbolji uniform K={best_unif_k} (error: {best_unif_error:.4f})")
-    print(f"  → Odabrano: K={optimal_k}, weights='{optimal_weights}' (error: {best_error:.4f})")
+    print(f"  → Odabrano: K={optimal_k}, weights='{optimal_weights}'")
     
     elbow_df = pd.DataFrame({
         'K': list(k_values),
@@ -142,9 +187,8 @@ def train_models(processed_dir, models_dir):
     })
     elbow_df.to_csv(os.path.join(models_dir, 'knn_elbow_results.csv'), index=False)
     
-    # GridSearch za KNN: dodatno pretraživanje oko optimalnog K + metrika rastojanja
     knn_pipeline = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
+        ('smoteenn', SMOTEENN(random_state=42)),
         ('clf', KNeighborsClassifier(weights=optimal_weights))
     ])
     k_range = range(max(1, optimal_k - 4), optimal_k + 5)
@@ -154,25 +198,29 @@ def train_models(processed_dir, models_dir):
     }
     knn_grid = GridSearchCV(knn_pipeline, knn_param_grid, cv=5, scoring='f1', n_jobs=-1, verbose=1)
     knn_grid.fit(X_train, y_train)
+    
+    best_knn = knn_grid.best_estimator_
+    thresh, val_f1 = find_best_threshold(best_knn, X_val, y_val)
+    model_thresholds['knn_model'] = thresh
+    
     print(f"  → GridSearch najbolji parametri: {knn_grid.best_params_}")
-    print(f"  → GridSearch najbolji F1 (CV): {knn_grid.best_score_:.4f}")
-    joblib.dump(knn_grid.best_estimator_, os.path.join(models_dir, 'knn_model.pkl'))
+    print(f"  → Optimalni prag na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
+    joblib.dump(best_knn, os.path.join(models_dir, 'knn_model.pkl'))
     
     # =========================================================================
-    # 5. SVM - GridSearchCV (Uklonjen base_estimator zbog sklearn verzije)
+    # 5. SVM - GridSearchCV
     # =========================================================================
     print("=" * 60)
-    print("5/6  SVM - GridSearchCV")
+    print("5/6  SVM - GridSearchCV (SMOTEENN)")
     print("=" * 60)
     svm_pipeline = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
+        ('smoteenn', SMOTEENN(random_state=42)),
         ('clf', CalibratedClassifierCV(
-            estimator=SVC(random_state=42, class_weight='balanced'),
+            estimator=SVC(random_state=42),
             ensemble=False
         ))
     ])
     
-    # ISPRAVLJENO: 'clf__base_estimator__...' je zamenjeno sa 'clf__estimator__...'
     svm_param_grid = {
         'clf__estimator__C': [0.1, 1.0, 10.0],
         'clf__estimator__gamma': ['scale', 'auto'],
@@ -180,20 +228,25 @@ def train_models(processed_dir, models_dir):
     }
     svm_grid = GridSearchCV(svm_pipeline, svm_param_grid, cv=5, scoring='f1', n_jobs=-1, verbose=1)
     svm_grid.fit(X_train, y_train)
-    print(f"  → Najbolji parametri: {svm_grid.best_params_}")
-    print(f"  → Najbolji F1 (CV): {svm_grid.best_score_:.4f}")
-    joblib.dump(svm_grid.best_estimator_, os.path.join(models_dir, 'svm_model.pkl'))
+    
+    best_svm = svm_grid.best_estimator_
+    thresh, val_f1 = find_best_threshold(best_svm, X_val, y_val)
+    model_thresholds['svm_model'] = thresh
+    
+    print(f"  → Najbolji CV parametri: {svm_grid.best_params_}")
+    print(f"  → Optimalni prag na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
+    joblib.dump(best_svm, os.path.join(models_dir, 'svm_model.pkl'))
     
     # =========================================================================
-    # 6. XGBoost - GridSearchCV
+    # 6. XGBoost - GridSearchCV (UKLONJEN scale_pos_weight ZBOG DUPLIRANJA SA SMOTE)
     # =========================================================================
     print("=" * 60)
-    print("6/6  XGBoost - GridSearchCV")
+    print("6/6  XGBoost - GridSearchCV (Sređeno balansiranje)")
     print("=" * 60)
-    scale_pos_weight = y_train.value_counts()[0] / y_train.value_counts()[1]
+    
     xgb_pipeline = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
-        ('clf', xgb.XGBClassifier(scale_pos_weight=scale_pos_weight, random_state=42, eval_metric='logloss'))
+        ('smoteenn', SMOTEENN(random_state=42)),
+        ('clf', xgb.XGBClassifier(random_state=42, eval_metric='logloss'))
     ])
     xgb_param_grid = {
         'clf__n_estimators': [100, 200],
@@ -204,9 +257,14 @@ def train_models(processed_dir, models_dir):
     }
     xgb_grid = GridSearchCV(xgb_pipeline, xgb_param_grid, cv=5, scoring='f1', n_jobs=-1, verbose=1)
     xgb_grid.fit(X_train, y_train)
-    print(f"  → Najbolji parametri: {xgb_grid.best_params_}")
-    print(f"  → Najbolji F1 (CV): {xgb_grid.best_score_:.4f}")
-    joblib.dump(xgb_grid.best_estimator_, os.path.join(models_dir, 'xgboost_model.pkl'))
+    
+    best_xgb = xgb_grid.best_estimator_
+    thresh, val_f1 = find_best_threshold(best_xgb, X_val, y_val)
+    model_thresholds['xgboost_model'] = thresh
+    
+    print(f"  → Najbolji CV parametri: {xgb_grid.best_params_}")
+    print(f"  → Optimalni prag na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
+    joblib.dump(best_xgb, os.path.join(models_dir, 'xgboost_model.pkl'))
     
     # =========================================================================
     # FAZA: FEATURE SELECTION - Top 5 najvažnijih atributa
@@ -214,19 +272,19 @@ def train_models(processed_dir, models_dir):
     print("=" * 60)
     print("Feature Selection - Top 5 atributa")
     print("=" * 60)
-    gb_best = gb_grid.best_estimator_
-    gb_clf = gb_best.named_steps['clf']
+    gb_clf = best_gb.named_steps['clf']
     importances = pd.Series(gb_clf.feature_importances_, index=X_train.columns).sort_values(ascending=False)
     top_features = list(importances.head(5).index)
     
     joblib.dump(top_features, os.path.join(models_dir, 'top_features.pkl'))
     print(f"Odabrani najznačajniji atributi: {top_features}")
     
-    # Treniranje redukovanog modela sa najboljim hiperparametrima izvučenim iz GridSearch-a
-    print("Treniram redukovani Gradient Boosting model (samo najvažniji atributi)...")
+    print("Treniram redukovani Gradient Boosting model...")
     X_train_reduced = X_train[top_features]
+    X_val_reduced = X_val[top_features]
+    
     reduced_gb = ImbPipeline([
-        ('smote', SMOTE(random_state=42)),
+        ('smoteenn', SMOTEENN(random_state=42)),
         ('clf', GradientBoostingClassifier(
             n_estimators=gb_grid.best_params_['clf__n_estimators'],
             learning_rate=gb_grid.best_params_['clf__learning_rate'],
@@ -236,10 +294,18 @@ def train_models(processed_dir, models_dir):
         ))
     ])
     reduced_gb.fit(X_train_reduced, y_train)
+    
+    thresh, val_f1 = find_best_threshold(reduced_gb, X_val_reduced, y_val)
+    model_thresholds['gradient_boosting_reduced_model'] = thresh
+    
+    print(f"  → Optimalni prag za redukovani model na VAL: {thresh:.2f} (F1 na VAL: {val_f1:.4f})")
     joblib.dump(reduced_gb, os.path.join(models_dir, 'gradient_boosting_reduced_model.pkl'))
     
+    # Čuvanje rečnika sa svim pragovima kako bi skripta `evaluate.py` mogla da ih pročita
+    joblib.dump(model_thresholds, os.path.join(models_dir, 'optimal_thresholds.pkl'))
+    
     print("\n" + "=" * 60)
-    print("  SVE FAZE TRENIRANJA SA GridSearchCV USPEŠNO ZAVRŠENE!")
+    print("  SVE FAZE TRENIRANJA I OPTIMIZACIJE PRAGOVA USPEŠNO ZAVRŠENE!")
     print("=" * 60)
 
 if __name__ == "__main__":
