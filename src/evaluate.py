@@ -86,7 +86,8 @@ def evaluate_all_models(processed_dir, models_dir, results_dir):
             y_prob = (y_prob - y_prob.min()) / (y_prob.max() - y_prob.min())
         
         # PRIMENA OPTIMALNOG PRAGA UMESTO STREKTNOG model.predict()
-        y_pred = (y_prob >= current_thresh).astype(int)
+        #Model izracunao da je sansa da korisnik ode  npr 54%, optimizovani prag za dati model npr 60%
+        y_pred = (y_prob >= current_thresh).astype(int) #posto 0.54>=0.60 ovo nije tacno, vraća se False-0
         
         # Izračunavanje svih metrika
         acc = accuracy_score(y_test, y_pred)
