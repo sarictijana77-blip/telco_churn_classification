@@ -28,7 +28,7 @@ def evaluate_all_models(processed_dir, models_dir, results_dir):
         thresholds = {}
     
     # Rečnik modela i pripadajućih testnih podataka
-    # Ažurirani nazivi u SMOTEENN jer smo promenili tehniku uzorkovanja
+  
     models_to_eval = {
         'Logistic Regression (SMOTEENN)': {
             'model': joblib.load(os.path.join(models_dir, 'logistic_regression_model.pkl')), 
